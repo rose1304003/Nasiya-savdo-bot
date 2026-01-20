@@ -2,19 +2,23 @@
 # -*- coding: utf-8 -*-
 
 """
-Nasiya Savdo Xizmatlari So'rovnoma Bot
+Nasiya Savdo Xizmatlari So'rovnoma Bot (v2)
 ✅ 3 languages: Uzbek (Latin), Russian, English
 ✅ Region buttons for Uzbekistan (paginated)
-✅ Saves to CSV (+ optional Google Sheets)
-✅ Admin export: /export
+✅ PostgreSQL database (primary storage)
+✅ CSV backup
+✅ Optional Google Sheets integration
+✅ Admin export: /export, /stats
+✅ Based on Central Bank survey questionnaire
 """
 
 import os
 import csv
 import tempfile
 import logging
+import asyncio
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from telegram import (
     Update,
@@ -55,8 +59,10 @@ if json_env and not os.getenv("GOOGLE_SHEETS_JSON"):
     os.environ["GOOGLE_SHEETS_JSON"] = tmp.name
     log.info("Wrote GOOGLE_SHEETS_JSON to temp file: %s", tmp.name)
 
+# ---------------- Configuration ----------------
 CSV_PATH = os.environ.get("CSV_PATH", "nasiya_survey_responses.csv")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 def parse_admin_ids(raw: Optional[str]) -> List[int]:
     if not raw:
@@ -74,8 +80,254 @@ def parse_admin_ids(raw: Optional[str]) -> List[int]:
 
 ADMIN_IDS: List[int] = parse_admin_ids(os.getenv("ADMIN_IDS"))
 
+# ---------------- PostgreSQL Database ----------------
+db_pool = None
+
+async def init_db():
+    """Initialize PostgreSQL connection pool and create tables."""
+    global db_pool
+    
+    if not DATABASE_URL:
+        log.warning("DATABASE_URL not set, PostgreSQL disabled")
+        return
+    
+    try:
+        import asyncpg
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+        
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS survey_responses (
+                    id SERIAL PRIMARY KEY,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    user_id BIGINT,
+                    username VARCHAR(255),
+                    language VARCHAR(10),
+                    
+                    -- I. Respondent profile
+                    region_city VARCHAR(255),
+                    region_city_id VARCHAR(10),
+                    age_group VARCHAR(50),
+                    gender VARCHAR(20),
+                    employment VARCHAR(100),
+                    income VARCHAR(100),
+                    
+                    -- II. Usage
+                    freq_3m VARCHAR(50),
+                    months_using INTEGER,
+                    company_name VARCHAR(255),
+                    avg_purchase VARCHAR(100),
+                    product_types TEXT,
+                    
+                    -- III. Multiple obligations
+                    multi_company_use VARCHAR(10),
+                    multi_company_debt VARCHAR(10),
+                    income_share_percent INTEGER,
+                    debt_burden_checked VARCHAR(10),
+                    missed_payment VARCHAR(10),
+                    
+                    -- IV. Transparency
+                    total_cost_clear VARCHAR(10),
+                    fees_explained VARCHAR(10),
+                    schedule_given VARCHAR(10),
+                    
+                    -- V. Difficulties
+                    difficulty_reason VARCHAR(100),
+                    borrowed_for_payments VARCHAR(10),
+                    cut_essential_spending VARCHAR(10),
+                    used_for_cash_need VARCHAR(10),
+                    
+                    -- VI. Collection practices
+                    contact_methods TEXT,
+                    aggressive_collection VARCHAR(10),
+                    
+                    -- VII. Complaints & trust
+                    complaint_submitted VARCHAR(10),
+                    complaint_resolved VARCHAR(10),
+                    satisfaction_1_5 INTEGER,
+                    recommend VARCHAR(10),
+                    
+                    -- VIII. Financial awareness
+                    read_contract VARCHAR(10),
+                    know_limit VARCHAR(10),
+                    impulse_buying VARCHAR(10),
+                    need_stricter_regulation VARCHAR(50)
+                )
+            ''')
+            
+            # Create index for faster queries
+            await conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_survey_created_at 
+                ON survey_responses(created_at)
+            ''')
+            await conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_survey_user_id 
+                ON survey_responses(user_id)
+            ''')
+            
+        log.info("PostgreSQL initialized successfully")
+    except ImportError:
+        log.error("asyncpg not installed. Run: pip install asyncpg")
+    except Exception as e:
+        log.error(f"PostgreSQL init error: {e}")
+
+async def save_to_db(data: Dict[str, Any]) -> bool:
+    """Save survey response to PostgreSQL."""
+    global db_pool
+    
+    if not db_pool:
+        return False
+    
+    try:
+        # Convert lists to semicolon-separated strings
+        product_types = data.get("product_types", [])
+        if isinstance(product_types, (list, set, tuple)):
+            product_types = "; ".join(str(x) for x in product_types)
+        
+        contact_methods = data.get("contact_methods", [])
+        if isinstance(contact_methods, (list, set, tuple)):
+            contact_methods = "; ".join(str(x) for x in contact_methods)
+        
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO survey_responses (
+                    user_id, username, language,
+                    region_city, region_city_id, age_group, gender, employment, income,
+                    freq_3m, months_using, company_name, avg_purchase, product_types,
+                    multi_company_use, multi_company_debt, income_share_percent, 
+                    debt_burden_checked, missed_payment,
+                    total_cost_clear, fees_explained, schedule_given,
+                    difficulty_reason, borrowed_for_payments, cut_essential_spending, 
+                    used_for_cash_need,
+                    contact_methods, aggressive_collection,
+                    complaint_submitted, complaint_resolved, satisfaction_1_5, recommend,
+                    read_contract, know_limit, impulse_buying, need_stricter_regulation
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                    $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+                    $31, $32, $33, $34, $35
+                )
+            ''',
+                data.get("user_id"),
+                data.get("username"),
+                data.get("language"),
+                data.get("region_city"),
+                data.get("region_city_id"),
+                data.get("age_group"),
+                data.get("gender"),
+                data.get("employment"),
+                data.get("income"),
+                data.get("freq_3m"),
+                data.get("months_using"),
+                data.get("company_name"),
+                data.get("avg_purchase"),
+                product_types,
+                data.get("multi_company_use"),
+                data.get("multi_company_debt"),
+                data.get("income_share_percent"),
+                data.get("debt_burden_checked"),
+                data.get("missed_payment"),
+                data.get("total_cost_clear"),
+                data.get("fees_explained"),
+                data.get("schedule_given"),
+                data.get("difficulty_reason"),
+                data.get("borrowed_for_payments"),
+                data.get("cut_essential_spending"),
+                data.get("used_for_cash_need"),
+                contact_methods,
+                data.get("aggressive_collection"),
+                data.get("complaint_submitted"),
+                data.get("complaint_resolved"),
+                data.get("satisfaction_1_5"),
+                data.get("recommend"),
+                data.get("read_contract"),
+                data.get("know_limit"),
+                data.get("impulse_buying"),
+                data.get("need_stricter_regulation"),
+            )
+        return True
+    except Exception as e:
+        log.error(f"PostgreSQL save error: {e}")
+        return False
+
+async def get_stats() -> Dict[str, Any]:
+    """Get survey statistics from PostgreSQL."""
+    global db_pool
+    
+    if not db_pool:
+        return {}
+    
+    try:
+        async with db_pool.acquire() as conn:
+            total = await conn.fetchval('SELECT COUNT(*) FROM survey_responses')
+            today = await conn.fetchval('''
+                SELECT COUNT(*) FROM survey_responses 
+                WHERE created_at >= CURRENT_DATE
+            ''')
+            week = await conn.fetchval('''
+                SELECT COUNT(*) FROM survey_responses 
+                WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+            ''')
+            
+            # Top regions
+            regions = await conn.fetch('''
+                SELECT region_city, COUNT(*) as cnt 
+                FROM survey_responses 
+                WHERE region_city IS NOT NULL
+                GROUP BY region_city 
+                ORDER BY cnt DESC 
+                LIMIT 5
+            ''')
+            
+            # Satisfaction average
+            avg_satisfaction = await conn.fetchval('''
+                SELECT ROUND(AVG(satisfaction_1_5)::numeric, 2) 
+                FROM survey_responses 
+                WHERE satisfaction_1_5 IS NOT NULL
+            ''')
+            
+            return {
+                "total": total or 0,
+                "today": today or 0,
+                "week": week or 0,
+                "top_regions": [(r["region_city"], r["cnt"]) for r in regions],
+                "avg_satisfaction": float(avg_satisfaction) if avg_satisfaction else 0,
+            }
+    except Exception as e:
+        log.error(f"PostgreSQL stats error: {e}")
+        return {}
+
+async def export_db_to_csv() -> Optional[str]:
+    """Export all PostgreSQL data to a CSV file."""
+    global db_pool
+    
+    if not db_pool:
+        return None
+    
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch('SELECT * FROM survey_responses ORDER BY created_at')
+            
+            if not rows:
+                return None
+            
+            export_path = "/tmp/survey_export.csv"
+            with open(export_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                # Write headers
+                writer.writerow(rows[0].keys())
+                # Write data
+                for row in rows:
+                    writer.writerow(row.values())
+            
+            return export_path
+    except Exception as e:
+        log.error(f"PostgreSQL export error: {e}")
+        return None
+
 # ---------------- i18n ----------------
-LANGS = {"uz": "O‘zbek", "ru": "Русский", "en": "English"}
+LANGS = {"uz": "O'zbek", "ru": "Русский", "en": "English"}
 
 T = {
     "choose_lang": {
@@ -84,21 +336,21 @@ T = {
         "en": "Choose language:",
     },
     "start": {
-        "uz": "Assalomu alaykum! Nasiya savdo xizmatlari bo‘yicha so‘rovnomani boshlaymiz.",
-        "ru": "Здравствуйте! Начнём опрос по услугам «Насия савдо».",
-        "en": "Hello! Let’s start the survey about installment trade services (Nasiya Savdo).",
+        "uz": "Assalomu alaykum! 🏦\n\nNasiya savdo xizmatlari foydalanuvchilari uchun so'rovnomani boshlaymiz.\n\n(Markaziy bank hududiy bosh boshqarmalari tomonidan o'tkaziladi)",
+        "ru": "Здравствуйте! 🏦\n\nНачнём опрос для пользователей услуг «Насия савдо».\n\n(Проводится территориальными главными управлениями Центрального банка)",
+        "en": "Hello! 🏦\n\nLet's start the survey for users of installment trade services (Nasiya Savdo).\n\n(Conducted by territorial main departments of the Central Bank)",
     },
     "btn_start": {"uz": "Boshlash ✅", "ru": "Начать ✅", "en": "Start ✅"},
     "btn_done": {"uz": "Tayyor ✅", "ru": "Готово ✅", "en": "Done ✅"},
     "invalid": {
-        "uz": "Noto‘g‘ri javob. Iltimos, tugmalar orqali tanlang yoki to‘g‘ri formatda kiriting.",
+        "uz": "Noto'g'ri javob. Iltimos, tugmalar orqali tanlang yoki to'g'ri formatda kiriting.",
         "ru": "Некорректный ответ. Пожалуйста, выберите кнопкой или введите в правильном формате.",
         "en": "Invalid answer. Please use buttons or enter a valid value.",
     },
     "saved": {
-        "uz": "Rahmat! So‘rovnoma yakunlandi ✅",
-        "ru": "Спасибо! Опрос завершён ✅",
-        "en": "Thank you! The survey is completed ✅",
+        "uz": "Rahmat! So'rovnoma yakunlandi ✅\n\nSizning javoblaringiz muvaffaqiyatli saqlandi.",
+        "ru": "Спасибо! Опрос завершён ✅\n\nВаши ответы успешно сохранены.",
+        "en": "Thank you! The survey is completed ✅\n\nYour responses have been saved successfully.",
     },
     "export_only_admin": {
         "uz": "Kechirasiz, bu buyruq faqat adminlar uchun.",
@@ -106,9 +358,49 @@ T = {
         "en": "Sorry, this command is for admins only.",
     },
     "no_data": {
-        "uz": "Hali ma’lumot yo‘q.",
+        "uz": "Hali ma'lumot yo'q.",
         "ru": "Данных пока нет.",
         "en": "No data yet.",
+    },
+    "section_1": {
+        "uz": "📋 **I. Respondent profili**",
+        "ru": "📋 **I. Профиль респондента**",
+        "en": "📋 **I. Respondent Profile**",
+    },
+    "section_2": {
+        "uz": "📊 **II. Nasiya savdo xizmatlaridan foydalanish**",
+        "ru": "📊 **II. Использование услуг «Насия савдо»**",
+        "en": "📊 **II. Usage of Installment Trade Services**",
+    },
+    "section_3": {
+        "uz": "💳 **III. Bir nechta majburiyatlar va ortiqcha qarzdorlik**",
+        "ru": "💳 **III. Множественные обязательства и чрезмерная задолженность**",
+        "en": "💳 **III. Multiple Obligations and Over-indebtedness**",
+    },
+    "section_4": {
+        "uz": "🔍 **IV. Shaffoflik va tushunarlilik**",
+        "ru": "🔍 **IV. Прозрачность и понятность**",
+        "en": "🔍 **IV. Transparency and Clarity**",
+    },
+    "section_5": {
+        "uz": "⚠️ **V. To'lov qiyinchiliklari va moliyaviy bosim**",
+        "ru": "⚠️ **V. Трудности с платежами и финансовое давление**",
+        "en": "⚠️ **V. Payment Difficulties and Financial Pressure**",
+    },
+    "section_6": {
+        "uz": "📞 **VI. Qarzni undirish amaliyoti**",
+        "ru": "📞 **VI. Практика взыскания долга**",
+        "en": "📞 **VI. Debt Collection Practices**",
+    },
+    "section_7": {
+        "uz": "📝 **VII. Shikoyatlar va ishonch**",
+        "ru": "📝 **VII. Жалобы и доверие**",
+        "en": "📝 **VII. Complaints and Trust**",
+    },
+    "section_8": {
+        "uz": "🎓 **VIII. Moliyaviy xabardorlik va xulq-atvor**",
+        "ru": "🎓 **VIII. Финансовая осведомлённость и поведение**",
+        "en": "🎓 **VIII. Financial Awareness and Behavior**",
     },
 }
 
@@ -118,7 +410,7 @@ def tr(lang: str, key: str) -> str:
 
 # ---------------- Uzbekistan regions (buttons) ----------------
 UZB_REGIONS = [
-    {"id": "qr",  "uz": "Qoraqalpog‘iston R.", "ru": "Республика Каракалпакстан", "en": "Republic of Karakalpakstan"},
+    {"id": "qr",  "uz": "Qoraqalpog'iston R.", "ru": "Республика Каракалпакстан", "en": "Republic of Karakalpakstan"},
     {"id": "an",  "uz": "Andijon",             "ru": "Андижанская",              "en": "Andijan"},
     {"id": "bu",  "uz": "Buxoro",              "ru": "Бухарская",               "en": "Bukhara"},
     {"id": "ji",  "uz": "Jizzax",              "ru": "Джизакская",              "en": "Jizzakh"},
@@ -130,7 +422,7 @@ UZB_REGIONS = [
     {"id": "si",  "uz": "Sirdaryo",            "ru": "Сырдарьинская",           "en": "Syrdarya"},
     {"id": "ta",  "uz": "Toshkent vil.",       "ru": "Ташкентская обл.",        "en": "Tashkent Region"},
     {"id": "tk",  "uz": "Toshkent shahri",     "ru": "г. Ташкент",              "en": "Tashkent City"},
-    {"id": "fa",  "uz": "Farg‘ona",            "ru": "Ферганская",              "en": "Fergana"},
+    {"id": "fa",  "uz": "Farg'ona",            "ru": "Ферганская",              "en": "Fergana"},
     {"id": "xo",  "uz": "Xorazm",              "ru": "Хорезмская",              "en": "Khorezm"},
 ]
 
@@ -186,29 +478,34 @@ def try_gs_save_row(
 
 # ---------------- Survey definition ----------------
 YESNO = {
-    "uz": ["Ha", "Yo‘q"],
+    "uz": ["Ha", "Yo'q"],
     "ru": ["Да", "Нет"],
     "en": ["Yes", "No"],
 }
 
 SURVEY: List[Dict[str, Any]] = [
-    # I. Respondent profile
+    # ======== I. Respondent profile ========
+    {
+        "id": "_section_1",
+        "kind": "section",
+        "text": {"uz": "section_1", "ru": "section_1", "en": "section_1"},
+    },
     {
         "id": "region_city",
-        "kind": "region",  # ✅ buttons (UZB regions)
+        "kind": "region",
         "text": {
-            "uz": "1) Yashash hududi (viloyat / shahar):",
-            "ru": "1) Регион проживания (область / город):",
-            "en": "1) Place of residence (region / city):",
+            "uz": "1️⃣ Yashash hududi (viloyat / shahar):",
+            "ru": "1️⃣ Регион проживания (область / город):",
+            "en": "1️⃣ Place of residence (region / city):",
         },
     },
     {
         "id": "age_group",
         "kind": "choice",
         "text": {
-            "uz": "2) Yosh guruhi:",
-            "ru": "2) Возрастная группа:",
-            "en": "2) Age group:",
+            "uz": "2️⃣ Yosh guruhi:",
+            "ru": "2️⃣ Возрастная группа:",
+            "en": "2️⃣ Age group:",
         },
         "options": {
             "uz": ["18 yoshgacha", "18–24", "25–34", "35–44", "45–54", "55 va undan yuqori"],
@@ -219,15 +516,15 @@ SURVEY: List[Dict[str, Any]] = [
     {
         "id": "gender",
         "kind": "choice",
-        "text": {"uz": "3) Jins:", "ru": "3) Пол:", "en": "3) Gender:"},
+        "text": {"uz": "3️⃣ Jins:", "ru": "3️⃣ Пол:", "en": "3️⃣ Gender:"},
         "options": {"uz": ["Erkak", "Ayol"], "ru": ["Мужчина", "Женщина"], "en": ["Male", "Female"]},
     },
     {
         "id": "employment",
         "kind": "choice",
-        "text": {"uz": "4) Bandlik holati:", "ru": "4) Занятость:", "en": "4) Employment status:"},
+        "text": {"uz": "4️⃣ Bandlik holati:", "ru": "4️⃣ Занятость:", "en": "4️⃣ Employment status:"},
         "options": {
-            "uz": ["Ishlaydi (rasmiy)", "Ishlaydi (norasmiy)", "O‘zini-o‘zi band qilgan", "Talaba", "Nafaqada", "Ishsiz", "Boshqa"],
+            "uz": ["Ishlaydi (rasmiy)", "Ishlaydi (norasmiy)", "O'zini-o'zi band qilgan", "Talaba", "Nafaqada", "Ishsiz", "Boshqa"],
             "ru": ["Работаю (официально)", "Работаю (неофициально)", "Самозанятый(ая)", "Студент(ка)", "На пенсии", "Безработный(ая)", "Другое"],
             "en": ["Employed (formal)", "Employed (informal)", "Self-employed", "Student", "Retired", "Unemployed", "Other"],
         },
@@ -235,25 +532,30 @@ SURVEY: List[Dict[str, Any]] = [
     {
         "id": "income",
         "kind": "choice",
-        "text": {"uz": "5) O‘rtacha oylik daromadingiz:", "ru": "5) Средний ежемесячный доход:", "en": "5) Average monthly income:"},
+        "text": {"uz": "5️⃣ O'rtacha oylik daromadi:", "ru": "5️⃣ Средний ежемесячный доход:", "en": "5️⃣ Average monthly income:"},
         "options": {
-            "uz": ["0–2 mln so‘m", "2–5 mln so‘m", "5–10 mln so‘m", "10–20 mln so‘m", "20 mln so‘mdan yuqori"],
+            "uz": ["0–2 mln so'm", "2–5 mln so'm", "5–10 mln so'm", "10–20 mln so'm", "20 mln so'mdan yuqori"],
             "ru": ["0–2 млн сум", "2–5 млн сум", "5–10 млн сум", "10–20 млн сум", "более 20 млн сум"],
             "en": ["0–2 mln UZS", "2–5 mln UZS", "5–10 mln UZS", "10–20 mln UZS", "Above 20 mln UZS"],
         },
     },
 
-    # II. Usage
+    # ======== II. Usage ========
+    {
+        "id": "_section_2",
+        "kind": "section",
+        "text": {"uz": "section_2", "ru": "section_2", "en": "section_2"},
+    },
     {
         "id": "freq_3m",
         "kind": "choice",
         "text": {
-            "uz": "6) Oxirgi 3 oyda nasiya savdo xizmatidan foydalanish chastotasi:",
-            "ru": "6) Частота использования за последние 3 месяца:",
-            "en": "6) Frequency of use in the last 3 months:",
+            "uz": "6️⃣ Oxirgi 3 oyda nasiya savdo xizmatidan foydalanish chastotasi:",
+            "ru": "6️⃣ Частота использования за последние 3 месяца:",
+            "en": "6️⃣ Frequency of use in the last 3 months:",
         },
         "options": {
-            "uz": ["1 marta", "2–3 marta", "4–5 marta", "6 va undan ko‘p", "Umuman foydalanmagan"],
+            "uz": ["1 marta", "2–3 marta", "4–5 marta", "6 va undan ko'p", "Umuman foydalanmagan"],
             "ru": ["1 раз", "2–3 раза", "4–5 раз", "6 и более", "Не пользовался(ась)"],
             "en": ["Once", "2–3 times", "4–5 times", "6 or more", "Did not use"],
         },
@@ -264,28 +566,28 @@ SURVEY: List[Dict[str, Any]] = [
         "min": 0,
         "max": 240,
         "text": {
-            "uz": "7) Nasiya savdo xizmatlaridan qancha vaqtdan beri foydalanasiz? (oylarda)",
-            "ru": "7) Сколько времени вы пользуетесь услугой? (в месяцах)",
-            "en": "7) How long have you been using it? (in months)",
+            "uz": "7️⃣ Nasiya savdo xizmatlaridan qancha vaqtdan beri foydalanasiz?",
+            "ru": "7️⃣ Сколько времени вы пользуетесь услугой?",
+            "en": "7️⃣ How long have you been using it?",
         },
-        "hint": {"uz": "Masalan: 6", "ru": "Напр.: 6", "en": "E.g.: 6"},
+        "hint": {"uz": "Oylarda ko'rsating, masalan: 6", "ru": "Укажите в месяцах, напр.: 6", "en": "Indicate in months, e.g.: 6"},
     },
     {
         "id": "company_name",
         "kind": "text",
         "text": {
-            "uz": "8) Qaysi nasiya savdo kompaniya xizmatidan foydalanasiz?",
-            "ru": "8) Какой компанией (сервисом) вы пользуетесь?",
-            "en": "8) Which Nasiya Savdo company/service do you use?",
+            "uz": "8️⃣ Qaysi nasiya savdo kompaniya xizmatidan foydalanasiz?",
+            "ru": "8️⃣ Какой компанией (сервисом) вы пользуетесь?",
+            "en": "8️⃣ Which Nasiya Savdo company/service do you use?",
         },
         "hint": {"uz": "Kompaniya nomini yozing", "ru": "Укажите название", "en": "Type the company name"},
     },
     {
         "id": "avg_purchase",
         "kind": "choice",
-        "text": {"uz": "9) O‘rtacha bitta xarid summasi:", "ru": "9) Средняя сумма одной покупки:", "en": "9) Average purchase amount:"},
+        "text": {"uz": "9️⃣ O'rtacha bitta xarid summasi (so'm):", "ru": "9️⃣ Средняя сумма одной покупки:", "en": "9️⃣ Average purchase amount:"},
         "options": {
-            "uz": ["5 mln so‘mgacha", "10 mln so‘mgacha", "50 mln so‘mgacha", "100 mln so‘mgacha", "500 mln so‘mdan ortiq"],
+            "uz": ["5 mln so'mgacha", "10 mln so'mgacha", "50 mln so'mgacha", "100 mln so'mgacha", "500 mln so'mdan ortiq"],
             "ru": ["до 5 млн", "до 10 млн", "до 50 млн", "до 100 млн", "более 500 млн"],
             "en": ["Up to 5 mln", "Up to 10 mln", "Up to 50 mln", "Up to 100 mln", "Above 500 mln"],
         },
@@ -293,11 +595,11 @@ SURVEY: List[Dict[str, Any]] = [
     {
         "id": "product_types",
         "kind": "multi",
-        "max_select": 3,
+        "max_select": 7,
         "text": {
-            "uz": "10) Asosan qaysi mahsulot/xizmatlarni xarid qilasiz? (bir nechta tanlash mumkin)",
-            "ru": "10) Какие товары/услуги вы покупаете чаще всего? (можно несколько)",
-            "en": "10) What do you mostly buy? (multiple choice)",
+            "uz": "🔟 Nasiya savdo orqali asosan qaysi mahsulot/xizmatlarni xarid qilasiz?\n(bir nechta variant tanlash mumkin)",
+            "ru": "🔟 Какие товары/услуги вы покупаете чаще всего?\n(можно несколько)",
+            "en": "🔟 What do you mostly buy?\n(multiple choice allowed)",
         },
         "options": {
             "uz": ["Elektronika", "Kiyim-kechak", "Maishiy texnika", "Oziq-ovqat", "Qurilish mahsulotlari / avto ehtiyot qismlar", "Sayohat / xizmatlar", "Boshqa"],
@@ -306,158 +608,273 @@ SURVEY: List[Dict[str, Any]] = [
         },
     },
 
-    # III. Multiple obligations / over-indebtedness
-    {"id": "multi_company_use", "kind": "choice", "text": {
-        "uz": "11) Bir vaqtning o‘zida bir nechta kompaniya xizmatidan foydalanasizmi?",
-        "ru": "11) Пользуетесь ли сразу несколькими компаниями?",
-        "en": "11) Do you use multiple companies at the same time?",
-    }, "options": YESNO},
-    {"id": "multi_company_debt", "kind": "choice", "text": {
-        "uz": "12) Hozirda bir nechta kompaniyalar oldida qarzdorligingiz bormi?",
-        "ru": "12) Есть ли у вас долги перед несколькими компаниями?",
-        "en": "12) Do you currently have debts to multiple companies?",
-    }, "options": YESNO},
+    # ======== III. Multiple obligations / over-indebtedness ========
+    {
+        "id": "_section_3",
+        "kind": "section",
+        "text": {"uz": "section_3", "ru": "section_3", "en": "section_3"},
+    },
+    {
+        "id": "multi_company_use",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣1️⃣ Bir vaqtning o'zida bir nechta nasiya savdo kompaniyasi xizmatidan foydalanasizmi?",
+            "ru": "1️⃣1️⃣ Пользуетесь ли сразу несколькими компаниями?",
+            "en": "1️⃣1️⃣ Do you use multiple companies at the same time?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "multi_company_debt",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣2️⃣ Hozirda bir nechta nasiya savdo kompaniyalari oldida qarzdorligingiz bormi?",
+            "ru": "1️⃣2️⃣ Есть ли у вас долги перед несколькими компаниями?",
+            "en": "1️⃣2️⃣ Do you currently have debts to multiple companies?",
+        },
+        "options": YESNO,
+    },
     {
         "id": "income_share_percent",
         "kind": "percent",
         "text": {
-            "uz": "13) Oylik to‘lovlaringiz daromadingizning taxminan necha foizini tashkil etadi? (%)",
-            "ru": "13) Какой примерно процент дохода уходит на ежемесячные платежи? (%)",
-            "en": "13) Approx. what % of your income goes to monthly payments? (%)",
+            "uz": "1️⃣3️⃣ Nasiya savdo bo'yicha oylik to'lovlaringiz daromadingizning taxminan necha foizini tashkil etadi?",
+            "ru": "1️⃣3️⃣ Какой примерно процент дохода уходит на ежемесячные платежи?",
+            "en": "1️⃣3️⃣ Approx. what % of your income goes to monthly payments?",
         },
-        "hint": {"uz": "0 dan 100 gacha son kiriting", "ru": "Введите число 0–100", "en": "Enter a number 0–100"},
+        "hint": {"uz": "0 dan 100 gacha son kiriting (%)", "ru": "Введите число 0–100 (%)", "en": "Enter a number 0–100 (%)"},
     },
-    {"id": "debt_burden_checked", "kind": "choice", "text": {
-        "uz": "14) Xarid paytida qarz yuki darajangiz hisobga olinganmi?",
-        "ru": "14) Учитывали ли вашу долговую нагрузку при покупке?",
-        "en": "14) Was your debt burden considered at purchase?",
-    }, "options": YESNO},
-    {"id": "missed_payment", "kind": "choice", "text": {
-        "uz": "15) To‘lovni kechiktirgan yoki o‘tkazib yuborgan holat bo‘lganmi?",
-        "ru": "15) Были ли просрочки/пропуски платежей?",
-        "en": "15) Have you delayed or missed a payment?",
-    }, "options": YESNO},
+    {
+        "id": "debt_burden_checked",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣4️⃣ Nasiya savdo orqali mahsulot/xizmatlar xarid qilganingizda qarz yuki darajangiz hisobga olinganmi?",
+            "ru": "1️⃣4️⃣ Учитывали ли вашу долговую нагрузку при покупке?",
+            "en": "1️⃣4️⃣ Was your debt burden considered at purchase?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "missed_payment",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣5️⃣ Nasiya savdo bo'yicha to'lovni kechiktirgan yoki o'tkazib yuborgan holat bo'lganmi?",
+            "ru": "1️⃣5️⃣ Были ли просрочки/пропуски платежей?",
+            "en": "1️⃣5️⃣ Have you delayed or missed a payment?",
+        },
+        "options": YESNO,
+    },
 
-    # IV. Transparency
-    {"id": "total_cost_clear", "kind": "choice", "text": {
-        "uz": "16) Xariddan oldin umumiy to‘lov summasi (total cost) tushunarli bo‘lganmi?",
-        "ru": "16) Было ли понятно, какая итоговая стоимость (total cost) до покупки?",
-        "en": "16) Was the total cost clear before purchase?",
-    }, "options": YESNO},
-    {"id": "fees_explained", "kind": "choice", "text": {
-        "uz": "17) Foizlar va qo‘shimcha to‘lovlar oldindan aniq tushuntirilganmi?",
-        "ru": "17) Объяснили ли заранее проценты и дополнительные платежи?",
-        "en": "17) Were interest and extra fees explained in advance?",
-    }, "options": YESNO},
-    {"id": "schedule_given", "kind": "choice", "text": {
-        "uz": "18) To‘lov jadvali (muddatlar va summalar) berilganmi?",
-        "ru": "18) Выдали ли график платежей (сроки и суммы)?",
-        "en": "18) Were you given a payment schedule (dates and amounts)?",
-    }, "options": YESNO},
+    # ======== IV. Transparency ========
+    {
+        "id": "_section_4",
+        "kind": "section",
+        "text": {"uz": "section_4", "ru": "section_4", "en": "section_4"},
+    },
+    {
+        "id": "total_cost_clear",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣6️⃣ Xarid qilishdan oldin umumiy to'lov summasi (total cost) sizga tushunarli bo'lganmi?",
+            "ru": "1️⃣6️⃣ Было ли понятно, какая итоговая стоимость (total cost) до покупки?",
+            "en": "1️⃣6️⃣ Was the total cost clear before purchase?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "fees_explained",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣7️⃣ Foizlar va qo'shimcha to'lovlar oldindan aniq tushuntirilganmi?",
+            "ru": "1️⃣7️⃣ Объяснили ли заранее проценты и дополнительные платежи?",
+            "en": "1️⃣7️⃣ Were interest and extra fees explained in advance?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "schedule_given",
+        "kind": "choice",
+        "text": {
+            "uz": "1️⃣8️⃣ To'lov jadvali (muddatlar va summalar) sizga berilganmi?",
+            "ru": "1️⃣8️⃣ Выдали ли график платежей (сроки и суммы)?",
+            "en": "1️⃣8️⃣ Were you given a payment schedule (dates and amounts)?",
+        },
+        "options": YESNO,
+    },
 
-    # V. Difficulties / financial pressure
+    # ======== V. Difficulties / financial pressure ========
+    {
+        "id": "_section_5",
+        "kind": "section",
+        "text": {"uz": "section_5", "ru": "section_5", "en": "section_5"},
+    },
     {
         "id": "difficulty_reason",
         "kind": "choice",
         "text": {
-            "uz": "19) Agar to‘lovda qiyinchilik bo‘lgan bo‘lsa, asosiy sabab nima edi?",
-            "ru": "19) Если были трудности с оплатой, какова основная причина?",
-            "en": "19) If you had payment difficulties, what was the main reason?",
+            "uz": "1️⃣9️⃣ Agar to'lovda qiyinchilik bo'lgan bo'lsa, asosiy sabab nima edi?",
+            "ru": "1️⃣9️⃣ Если были трудности с оплатой, какова основная причина?",
+            "en": "1️⃣9️⃣ If you had payment difficulties, what was the main reason?",
         },
         "options": {
-            "uz": ["Daromad kamayishi", "Ish yo‘qotilishi", "Narxlar oshishi", "Sog‘liq bilan bog‘liq sabablar", "Boshqa"],
+            "uz": ["Daromad kamayishi", "Ish yo'qotilishi", "Narxlar oshishi", "Sog'liq bilan bog'liq sabablar", "Boshqa"],
             "ru": ["Снижение дохода", "Потеря работы", "Рост цен", "Проблемы со здоровьем", "Другое"],
             "en": ["Income decreased", "Job loss", "Prices increased", "Health reasons", "Other"],
         },
     },
-    {"id": "borrowed_for_payments", "kind": "choice", "text": {
-        "uz": "20) To‘lovlarni amalga oshirish uchun boshqa qarz olganmisiz?",
-        "ru": "20) Брали ли вы другой займ, чтобы оплатить платежи?",
-        "en": "20) Did you borrow elsewhere to make payments?",
-    }, "options": YESNO},
-    {"id": "cut_essential_spending", "kind": "choice", "text": {
-        "uz": "21) Nasiya savdo sababli zarur xarajatlaringizni qisqartirganmisiz?",
-        "ru": "21) Сокращали ли вы необходимые расходы из-за платежей?",
-        "en": "21) Did you cut essential spending due to installment payments?",
-    }, "options": YESNO},
-    {"id": "used_for_cash_need", "kind": "choice", "text": {
-        "uz": "22) Pul ehtiyojingiz uchun nasiya savdodan foydalanganmisiz?",
-        "ru": "22) Использовали ли «насия» из-за нехватки денег/нужды в средствах?",
-        "en": "22) Did you use installment services due to cash needs?",
-    }, "options": YESNO},
+    {
+        "id": "borrowed_for_payments",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣0️⃣ Nasiya savdo to'lovlarini amalga oshirish uchun boshqa qarz olganmisiz?",
+            "ru": "2️⃣0️⃣ Брали ли вы другой займ, чтобы оплатить платежи?",
+            "en": "2️⃣0️⃣ Did you borrow elsewhere to make payments?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "cut_essential_spending",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣1️⃣ Nasiya savdo sababli asosiy (zarur) xarajatlaringizni qisqartirganmisiz?",
+            "ru": "2️⃣1️⃣ Сокращали ли вы необходимые расходы из-за платежей?",
+            "en": "2️⃣1️⃣ Did you cut essential spending due to installment payments?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "used_for_cash_need",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣2️⃣ Pul ehtiyojlaringiz uchun nasiya savdo xizmatidan foydalanganmisiz?",
+            "ru": "2️⃣2️⃣ Использовали ли «насия» из-за нехватки денег/нужды в средствах?",
+            "en": "2️⃣2️⃣ Did you use installment services due to cash needs?",
+        },
+        "options": YESNO,
+    },
 
-    # VI. Collection practices
+    # ======== VI. Collection practices ========
+    {
+        "id": "_section_6",
+        "kind": "section",
+        "text": {"uz": "section_6", "ru": "section_6", "en": "section_6"},
+    },
     {
         "id": "contact_methods",
         "kind": "multi",
-        "max_select": 3,
+        "max_select": 6,
         "text": {
-            "uz": "23) Kompaniya siz bilan qanday aloqa qilgan? (bir nechta tanlash mumkin)",
-            "ru": "23) Какими способами компания связывалась с вами? (можно несколько)",
-            "en": "23) How did the company contact you? (multiple choice)",
+            "uz": "2️⃣3️⃣ Nasiya savdo kompaniyasi siz bilan qanday aloqa qilgan?\n(bir nechta variant tanlash mumkin)",
+            "ru": "2️⃣3️⃣ Какими способами компания связывалась с вами?\n(можно несколько)",
+            "en": "2️⃣3️⃣ How did the company contact you?\n(multiple choice allowed)",
         },
         "options": {
-            "uz": ["SMS", "Avtomatik hisobdan yechish (avtospisaniya)", "Mobil ilova orqali bildirishnoma", "Telefon qo‘ng‘iroqlari", "Tashqi kollektor", "Sud orqali"],
+            "uz": ["SMS", "Avtomatik hisobdan yechish (avtospisaniya)", "Mobil ilova orqali bildirishnoma", "Telefon qo'ng'iroqlari", "Tashqi kollektor", "Sud orqali"],
             "ru": ["SMS", "Автосписание", "Уведомление в приложении", "Телефонные звонки", "Внешний коллектор", "Через суд"],
             "en": ["SMS", "Auto-debit", "In-app notification", "Phone calls", "External collector", "Through court"],
         },
     },
-    {"id": "aggressive_collection", "kind": "choice", "text": {
-        "uz": "24) Agressiv yoki bosim o‘tkazuvchi undirish holatlari bo‘lganmi?",
-        "ru": "24) Были ли случаи агрессивного/давящего взыскания?",
-        "en": "24) Was there aggressive or pressuring collection?",
-    }, "options": YESNO},
+    {
+        "id": "aggressive_collection",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣4️⃣ Sizga nisbatan agressiv yoki bosim o'tkazuvchi undirish holatlari bo'lganmi?",
+            "ru": "2️⃣4️⃣ Были ли случаи агрессивного/давящего взыскания?",
+            "en": "2️⃣4️⃣ Was there aggressive or pressuring collection?",
+        },
+        "options": YESNO,
+    },
 
-    # VII. Complaints & trust
-    {"id": "complaint_submitted", "kind": "choice", "text": {
-        "uz": "25) Kompaniyaga shikoyat berganmisiz?",
-        "ru": "25) Подавали ли вы жалобу компании?",
-        "en": "25) Did you submit a complaint to the company?",
-    }, "options": YESNO},
-    {"id": "complaint_resolved", "kind": "choice", "text": {
-        "uz": "26) Shikoyat bergan bo‘lsangiz, u hal qilinganmi?",
-        "ru": "26) Если жаловались, решилась ли проблема?",
-        "en": "26) If yes, was it resolved?",
-    }, "options": YESNO},
+    # ======== VII. Complaints & trust ========
+    {
+        "id": "_section_7",
+        "kind": "section",
+        "text": {"uz": "section_7", "ru": "section_7", "en": "section_7"},
+    },
+    {
+        "id": "complaint_submitted",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣5️⃣ Nasiya savdo kompaniyasiga shikoyat berganmisiz?",
+            "ru": "2️⃣5️⃣ Подавали ли вы жалобу компании?",
+            "en": "2️⃣5️⃣ Did you submit a complaint to the company?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "complaint_resolved",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣6️⃣ Agar shikoyat bergan bo'lsangiz, u hal qilinganmi?",
+            "ru": "2️⃣6️⃣ Если жаловались, решилась ли проблема?",
+            "en": "2️⃣6️⃣ If yes, was it resolved?",
+        },
+        "options": YESNO,
+    },
     {
         "id": "satisfaction_1_5",
         "kind": "choice",
         "text": {
-            "uz": "27) Umumiy qoniqish darajangiz (1–5):",
-            "ru": "27) Общая удовлетворённость (1–5):",
-            "en": "27) Overall satisfaction (1–5):",
+            "uz": "2️⃣7️⃣ Nasiya savdo xizmatlaridan umumiy qoniqish darajangiz:\n(1 — umuman qoniqmayman, 5 — to'liq qoniqaman)",
+            "ru": "2️⃣7️⃣ Общая удовлетворённость услугами:\n(1 — совсем не удовлетворён, 5 — полностью удовлетворён)",
+            "en": "2️⃣7️⃣ Overall satisfaction with services:\n(1 — not satisfied at all, 5 — fully satisfied)",
         },
         "options": {"uz": ["1", "2", "3", "4", "5"], "ru": ["1", "2", "3", "4", "5"], "en": ["1", "2", "3", "4", "5"]},
     },
-    {"id": "recommend", "kind": "choice", "text": {
-        "uz": "28) Boshqalarga tavsiya qilarmidingiz?",
-        "ru": "28) Порекомендовали бы другим?",
-        "en": "28) Would you recommend it to others?",
-    }, "options": YESNO},
+    {
+        "id": "recommend",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣8️⃣ Nasiya savdo xizmatlarini boshqalarga tavsiya qilarmidingiz?",
+            "ru": "2️⃣8️⃣ Порекомендовали бы другим?",
+            "en": "2️⃣8️⃣ Would you recommend it to others?",
+        },
+        "options": YESNO,
+    },
 
-    # VIII. Financial awareness / behavior
-    {"id": "read_contract", "kind": "choice", "text": {
-        "uz": "29) Shartnoma shartlarini o‘qib chiqqanmisiz?",
-        "ru": "29) Читали ли условия договора?",
-        "en": "29) Did you read the contract terms?",
-    }, "options": YESNO},
-    {"id": "know_limit", "kind": "choice", "text": {
-        "uz": "30) Ajratilgan limitni bilasizmi?",
-        "ru": "30) Знаете ли вы свой лимит?",
-        "en": "30) Do you know your assigned limit?",
-    }, "options": YESNO},
-    {"id": "impulse_buying", "kind": "choice", "text": {
-        "uz": "31) Nasiya savdo impulsiv xaridlarni ko‘paytiradi deb hisoblaysizmi?",
-        "ru": "31) Считаете ли, что «насия» увеличивает импульсивные покупки?",
-        "en": "31) Do you think installment services increase impulse buying?",
-    }, "options": YESNO},
+    # ======== VIII. Financial awareness / behavior ========
+    {
+        "id": "_section_8",
+        "kind": "section",
+        "text": {"uz": "section_8", "ru": "section_8", "en": "section_8"},
+    },
+    {
+        "id": "read_contract",
+        "kind": "choice",
+        "text": {
+            "uz": "2️⃣9️⃣ Shartnoma shartlarini o'qib chiqqanmisiz?",
+            "ru": "2️⃣9️⃣ Читали ли условия договора?",
+            "en": "2️⃣9️⃣ Did you read the contract terms?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "know_limit",
+        "kind": "choice",
+        "text": {
+            "uz": "3️⃣0️⃣ Sizga ajratilgan kredit limitini bilasizmi?",
+            "ru": "3️⃣0️⃣ Знаете ли вы свой кредитный лимит?",
+            "en": "3️⃣0️⃣ Do you know your assigned credit limit?",
+        },
+        "options": YESNO,
+    },
+    {
+        "id": "impulse_buying",
+        "kind": "choice",
+        "text": {
+            "uz": "3️⃣1️⃣ Nasiya savdo xizmatlari odatda rejalashtirilmagan (impulsiv) xaridlarni ko'paytiradi, deb hisoblaysizmi?",
+            "ru": "3️⃣1️⃣ Считаете ли, что «насия» увеличивает импульсивные покупки?",
+            "en": "3️⃣1️⃣ Do you think installment services increase impulse buying?",
+        },
+        "options": YESNO,
+    },
     {
         "id": "need_stricter_regulation",
         "kind": "choice",
         "text": {
-            "uz": "32) Sizningcha, bozorni qat’iyroq tartibga solish zarurmi?",
-            "ru": "32) Нужно ли более строго регулировать рынок?",
-            "en": "32) Is stricter regulation necessary?",
+            "uz": "3️⃣2️⃣ Sizningcha, nasiya savdo bozorini qat'iyroq tartibga solish zarurmi?",
+            "ru": "3️⃣2️⃣ Нужно ли более строго регулировать рынок?",
+            "en": "3️⃣2️⃣ Is stricter regulation necessary?",
         },
         "options": {
             "uz": ["Zarur", "Betaraf", "Zarur emas"],
@@ -504,7 +921,7 @@ def get_lang(ctx: ContextTypes.DEFAULT_TYPE) -> str:
 
 def kb_lang() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("O‘zbek 🇺🇿", callback_data="lang:uz")],
+        [InlineKeyboardButton("O'zbek 🇺🇿", callback_data="lang:uz")],
         [InlineKeyboardButton("Русский 🇷🇺", callback_data="lang:ru")],
         [InlineKeyboardButton("English 🇬🇧", callback_data="lang:en")],
     ])
@@ -524,7 +941,6 @@ def kb_multi(lang: str, qid: str, options: List[str], selected: set, done_label:
     return InlineKeyboardMarkup(rows)
 
 def kb_regions(lang: str, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
-    # 2 columns x 4 rows = 8 per page
     total = len(UZB_REGIONS)
     if total == 0:
         return InlineKeyboardMarkup([[InlineKeyboardButton("—", callback_data="noop")]])
@@ -582,6 +998,14 @@ def normalize_number(s: str) -> Optional[int]:
 async def send_question(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     i = int(ctx.user_data.get("q_index", 0))
+
+    # Skip section markers but show section headers
+    while i < len(SURVEY) and SURVEY[i]["kind"] == "section":
+        section_key = SURVEY[i]["text"].get(lang, SURVEY[i]["text"].get("uz", ""))
+        section_text = tr(lang, section_key)
+        await update.effective_chat.send_message(section_text, parse_mode="Markdown")
+        i += 1
+        ctx.user_data["q_index"] = i
 
     if i >= len(SURVEY):
         await finalize(update, ctx)
@@ -665,6 +1089,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return SURVEY_FLOW
 
     i = int(ctx.user_data.get("q_index", 0))
+    
+    # Skip section markers
+    while i < len(SURVEY) and SURVEY[i]["kind"] == "section":
+        i += 1
+        ctx.user_data["q_index"] = i
+
     if i >= len(SURVEY):
         await finalize(update, ctx)
         return ConversationHandler.END
@@ -688,7 +1118,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(tr(lang, "invalid"))
             return SURVEY_FLOW
 
-        # Save localized label + stable id (best for analysis)
         ctx.user_data["answers"]["region_city_id"] = rid
         ctx.user_data["answers"][qid] = reg.get(lang, reg["uz"])
 
@@ -701,6 +1130,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("ans:") and kind == "choice":
         ans = data.split(":", 1)[1]
         ctx.user_data["answers"][qid] = ans
+        
+        # Convert satisfaction to integer
+        if qid == "satisfaction_1_5":
+            try:
+                ctx.user_data["answers"][qid] = int(ans)
+            except ValueError:
+                pass
+        
         ctx.user_data["q_index"] = i + 1
         await send_question(update, ctx)
         return SURVEY_FLOW
@@ -716,7 +1153,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if opt in selected:
             selected.remove(opt)
         else:
-            if len(selected) < int(q.get("max_select", 3)):
+            if len(selected) < int(q.get("max_select", 7)):
                 selected.add(opt)
         ctx.user_data[key] = list(selected)
 
@@ -741,6 +1178,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     i = int(ctx.user_data.get("q_index", 0))
+    
+    # Skip section markers
+    while i < len(SURVEY) and SURVEY[i]["kind"] == "section":
+        i += 1
+        ctx.user_data["q_index"] = i
+
     if i >= len(SURVEY):
         await finalize(update, ctx)
         return ConversationHandler.END
@@ -784,7 +1227,6 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await send_question(update, ctx)
         return SURVEY_FLOW
 
-    # If user typed while buttons are expected
     await update.message.reply_text(tr(lang, "invalid"))
     return SURVEY_FLOW
 
@@ -792,19 +1234,29 @@ async def finalize(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     answers = ctx.user_data.get("answers", {})
 
-    # Save to CSV
+    # 1. Save to PostgreSQL (primary)
+    db_saved = await save_to_db(answers)
+    if db_saved:
+        log.info("Response saved to PostgreSQL")
+    else:
+        log.warning("PostgreSQL save failed, using CSV backup")
+
+    # 2. Save to CSV (backup)
     try:
         append_csv(answers)
+        log.info("Response saved to CSV")
     except Exception as e:
         log.error("CSV save error: %s", e)
 
-    # Optional: Google Sheets
+    # 3. Optional: Google Sheets
     gs_name = os.getenv("GOOGLE_SHEET_NAME", "").strip()
     gs_ws = os.getenv("GOOGLE_SHEET_WORKSHEET", "Responses").strip()
     if gs_name:
         err = try_gs_save_row(gs_name, gs_ws, answers, CSV_HEADERS_UZ, CSV_KEYS)
         if err:
             log.warning("Google Sheets not saved: %s", err)
+        else:
+            log.info("Response saved to Google Sheets")
 
     await update.effective_chat.send_message(tr(lang, "saved"), reply_markup=ReplyKeyboardRemove())
     ctx.user_data.clear()
@@ -816,6 +1268,17 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(tr(lang, "export_only_admin"))
         return
 
+    # Try PostgreSQL export first
+    export_path = await export_db_to_csv()
+    if export_path and os.path.exists(export_path):
+        await update.message.reply_document(
+            document=open(export_path, "rb"),
+            filename="survey_export_db.csv",
+            caption="📊 Nasiya survey export (PostgreSQL)",
+        )
+        return
+
+    # Fallback to local CSV
     if not os.path.exists(CSV_PATH) or os.path.getsize(CSV_PATH) == 0:
         await update.message.reply_text(tr(lang, "no_data"))
         return
@@ -823,8 +1286,34 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         document=open(CSV_PATH, "rb"),
         filename=os.path.basename(CSV_PATH),
-        caption="Nasiya survey export (CSV)",
+        caption="📊 Nasiya survey export (CSV backup)",
     )
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    lang = get_lang(ctx)
+    uid = update.effective_user.id if update.effective_user else 0
+    if uid not in ADMIN_IDS:
+        await update.message.reply_text(tr(lang, "export_only_admin"))
+        return
+
+    stats = await get_stats()
+    if not stats:
+        await update.message.reply_text(tr(lang, "no_data"))
+        return
+
+    text = f"""📊 **So'rovnoma statistikasi**
+
+📈 Jami javoblar: {stats.get('total', 0)}
+📅 Bugun: {stats.get('today', 0)}
+📆 Oxirgi 7 kun: {stats.get('week', 0)}
+⭐ O'rtacha qoniqish: {stats.get('avg_satisfaction', 0)}/5
+
+🏆 **Top hududlar:**
+"""
+    for region, count in stats.get("top_regions", []):
+        text += f"  • {region}: {count}\n"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 def build_app():
     if not BOT_TOKEN:
@@ -848,12 +1337,32 @@ def build_app():
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     return app
 
-def main():
+async def main():
+    # Initialize database
+    await init_db()
+    
+    # Build and run bot
     app = build_app()
     log.info("Bot started.")
-    app.run_polling(close_loop=False)
+    
+    # Initialize and start
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    # Keep running
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
