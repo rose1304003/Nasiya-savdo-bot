@@ -1,4 +1,12 @@
-python-telegram-bot==20.7
-python-dotenv==1.0.1
-gspread==6.1.4
-google-auth==2.34.0
+# Telegram Bot
+python-telegram-bot>=20.0
+
+# PostgreSQL (async)
+asyncpg>=0.29.0
+
+# Google Sheets (optional)
+gspread>=5.0.0
+google-auth>=2.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
