@@ -336,9 +336,9 @@ T = {
         "en": "Choose language:",
     },
     "start": {
-        "uz": "Assalomu alaykum! 🏦\n\nNasiya savdo xizmatlari foydalanuvchilari uchun so'rovnomani boshlaymiz.\n\n(Markaziy bank hududiy bosh boshqarmalari tomonidan o'tkaziladi)",
-        "ru": "Здравствуйте! 🏦\n\nНачнём опрос для пользователей услуг «Насия савдо».\n\n(Проводится территориальными главными управлениями Центрального банка)",
-        "en": "Hello! 🏦\n\nLet's start the survey for users of installment trade services (Nasiya Savdo).\n\n(Conducted by territorial main departments of the Central Bank)",
+        "uz": "Assalomu alaykum! 🏦\n\nNasiya savdo xizmatlari foydalanuvchilari uchun so'rovnomani boshlaymiz.",
+        "ru": "Здравствуйте! 🏦\n\nНачнём опрос для пользователей услуг «Насия савдо».",
+        "en": "Hello! 🏦\n\nLet's start the survey for users of installment trade services (Nasiya Savdo).",
     },
     "btn_start": {"uz": "Boshlash ✅", "ru": "Начать ✅", "en": "Start ✅"},
     "btn_done": {"uz": "Tayyor ✅", "ru": "Готово ✅", "en": "Done ✅"},
@@ -351,6 +351,11 @@ T = {
         "uz": "Rahmat! So'rovnoma yakunlandi ✅\n\nSizning javoblaringiz muvaffaqiyatli saqlandi.",
         "ru": "Спасибо! Опрос завершён ✅\n\nВаши ответы успешно сохранены.",
         "en": "Thank you! The survey is completed ✅\n\nYour responses have been saved successfully.",
+    },
+    "saved_not_used": {
+        "uz": "Katta rahmat! So'rov yakunlandi ✅",
+        "ru": "Большое спасибо! Опрос завершён ✅",
+        "en": "Thank you very much! The survey is completed ✅",
     },
     "export_only_admin": {
         "uz": "Kechirasiz, bu buyruq faqat adminlar uchun.",
@@ -369,7 +374,7 @@ T = {
     },
     "section_2": {
         "uz": "📊 **II. Nasiya savdo xizmatlaridan foydalanish**",
-        "ru": "📊 **II. Использование услуг «Насия савдо»**",
+        "ru": "📊 **II. Использование услуг «Насия савдо»",
         "en": "📊 **II. Usage of Installment Trade Services**",
     },
     "section_3": {
@@ -483,6 +488,13 @@ YESNO = {
     "en": ["Yes", "No"],
 }
 
+# Options that indicate user never used nasiya services (for early termination)
+NOT_USED_OPTIONS = {
+    "uz": "Umuman foydalanmagan",
+    "ru": "Не пользовался(ась)",
+    "en": "Did not use",
+}
+
 SURVEY: List[Dict[str, Any]] = [
     # ======== I. Respondent profile ========
     {
@@ -559,6 +571,7 @@ SURVEY: List[Dict[str, Any]] = [
             "ru": ["1 раз", "2–3 раза", "4–5 раз", "6 и более", "Не пользовался(ась)"],
             "en": ["Once", "2–3 times", "4–5 times", "6 or more", "Did not use"],
         },
+        "skip_if_not_used": True,  # Flag to check for early termination
     },
     {
         "id": "months_using",
@@ -995,6 +1008,11 @@ def normalize_number(s: str) -> Optional[int]:
         return None
     return int(s)
 
+def is_not_used_answer(ans: str, lang: str) -> bool:
+    """Check if the answer indicates user never used nasiya services."""
+    not_used_text = NOT_USED_OPTIONS.get(lang, NOT_USED_OPTIONS["uz"])
+    return ans == not_used_text
+
 async def send_question(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     i = int(ctx.user_data.get("q_index", 0))
@@ -1138,6 +1156,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 pass
         
+        # Check if this is the freq_3m question and user selected "Did not use"
+        if qid == "freq_3m" and q.get("skip_if_not_used") and is_not_used_answer(ans, lang):
+            # End survey early with special message
+            await finalize_not_used(update, ctx)
+            return ConversationHandler.END
+        
         ctx.user_data["q_index"] = i + 1
         await send_question(update, ctx)
         return SURVEY_FLOW
@@ -1229,6 +1253,39 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(tr(lang, "invalid"))
     return SURVEY_FLOW
+
+async def finalize_not_used(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """End survey early when user has never used nasiya services."""
+    lang = get_lang(ctx)
+    answers = ctx.user_data.get("answers", {})
+
+    # 1. Save to PostgreSQL (primary)
+    db_saved = await save_to_db(answers)
+    if db_saved:
+        log.info("Response saved to PostgreSQL (not used)")
+    else:
+        log.warning("PostgreSQL save failed, using CSV backup")
+
+    # 2. Save to CSV (backup)
+    try:
+        append_csv(answers)
+        log.info("Response saved to CSV (not used)")
+    except Exception as e:
+        log.error("CSV save error: %s", e)
+
+    # 3. Optional: Google Sheets
+    gs_name = os.getenv("GOOGLE_SHEET_NAME", "").strip()
+    gs_ws = os.getenv("GOOGLE_SHEET_WORKSHEET", "Responses").strip()
+    if gs_name:
+        err = try_gs_save_row(gs_name, gs_ws, answers, CSV_HEADERS_UZ, CSV_KEYS)
+        if err:
+            log.warning("Google Sheets not saved: %s", err)
+        else:
+            log.info("Response saved to Google Sheets (not used)")
+
+    # Send special "thank you" message for non-users
+    await update.effective_chat.send_message(tr(lang, "saved_not_used"), reply_markup=ReplyKeyboardRemove())
+    ctx.user_data.clear()
 
 async def finalize(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
