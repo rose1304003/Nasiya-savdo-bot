@@ -360,10 +360,11 @@ T = {
         "en": "Thank you! The survey is completed ✅\n\nYour responses have been saved successfully.",
     },
     "saved_not_used": {
-        "uz": "Katta rahmat! So'rov yakunlandi ✅",
-        "ru": "Большое спасибо! Опрос завершён ✅",
-        "en": "Thank you very much! The survey is completed ✅",
+    "uz": "Rahmat! ✅\n\nSo‘rovnomada ishtirok etganingiz uchun tashakkur.",
+    "ru": "Спасибо! ✅\n\nБлагодарим за участие в опросе.",
+    "en": "Thank you! ✅\n\nThanks for your participation in the survey.",
     },
+
     "export_only_admin": {
         "uz": "Kechirasiz, bu buyruq faqat adminlar uchun.",
         "ru": "Извините, команда только для админов.",
@@ -1071,6 +1072,16 @@ def normalize_multi_selection(selected_raw: List[Any], options: List[str]) -> se
     return selected_indices
 
 
+def is_no_answer(ans: str, lang: str) -> bool:
+    ans_norm = (ans or "").strip().lower()
+    no_map = {
+        "uz": {"yo'q", "yoq"},
+        "ru": {"нет"},
+        "en": {"no"},
+    }
+    return ans_norm in no_map.get(lang, set())
+
+
 async def send_question(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     i = int(ctx.user_data.get("q_index", 0))
@@ -1237,10 +1248,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 pass
 
         # Check if this is the freq_3m question and user selected "Did not use"
-        if qid == "freq_3m" and q.get("skip_if_not_used") and is_not_used_answer(ans, lang):
-            # End survey early with special message
+        # ✅ End survey early if user never used nasiya services (Question 6: ever_used)
+        if qid == "ever_used" and q.get("skip_if_not_used") and is_no_answer(ans, lang):
             await finalize_not_used(update, ctx)
             return ConversationHandler.END
+
 
         ctx.user_data["q_index"] = i + 1
         await send_question(update, ctx)
