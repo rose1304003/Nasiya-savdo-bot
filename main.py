@@ -18,7 +18,7 @@ import tempfile
 import logging
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 from telegram import (
     Update,
@@ -64,6 +64,7 @@ CSV_PATH = os.environ.get("CSV_PATH", "nasiya_survey_responses.csv")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+
 def parse_admin_ids(raw: Optional[str]) -> List[int]:
     if not raw:
         return []
@@ -78,23 +79,25 @@ def parse_admin_ids(raw: Optional[str]) -> List[int]:
             continue
     return out
 
+
 ADMIN_IDS: List[int] = parse_admin_ids(os.getenv("ADMIN_IDS"))
 
 # ---------------- PostgreSQL Database ----------------
 db_pool = None
 
+
 async def init_db():
     """Initialize PostgreSQL connection pool and create tables."""
     global db_pool
-    
+
     if not DATABASE_URL:
         log.warning("DATABASE_URL not set, PostgreSQL disabled")
         return
-    
+
     try:
         import asyncpg
         db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
-        
+
         async with db_pool.acquire() as conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS survey_responses (
@@ -103,7 +106,7 @@ async def init_db():
                     user_id BIGINT,
                     username VARCHAR(255),
                     language VARCHAR(10),
-                    
+
                     -- I. Respondent profile
                     region_city VARCHAR(255),
                     region_city_id VARCHAR(10),
@@ -111,42 +114,42 @@ async def init_db():
                     gender VARCHAR(20),
                     employment VARCHAR(100),
                     income VARCHAR(100),
-                    
+
                     -- II. Usage
                     freq_3m VARCHAR(50),
                     months_using INTEGER,
                     company_name VARCHAR(255),
                     avg_purchase VARCHAR(100),
                     product_types TEXT,
-                    
+
                     -- III. Multiple obligations
                     multi_company_use VARCHAR(10),
                     multi_company_debt VARCHAR(10),
                     income_share_percent INTEGER,
                     debt_burden_checked VARCHAR(10),
                     missed_payment VARCHAR(10),
-                    
+
                     -- IV. Transparency
                     total_cost_clear VARCHAR(10),
                     fees_explained VARCHAR(10),
                     schedule_given VARCHAR(10),
-                    
+
                     -- V. Difficulties
                     difficulty_reason VARCHAR(100),
                     borrowed_for_payments VARCHAR(10),
                     cut_essential_spending VARCHAR(10),
                     used_for_cash_need VARCHAR(10),
-                    
+
                     -- VI. Collection practices
                     contact_methods TEXT,
                     aggressive_collection VARCHAR(10),
-                    
+
                     -- VII. Complaints & trust
                     complaint_submitted VARCHAR(10),
                     complaint_resolved VARCHAR(10),
                     satisfaction_1_5 INTEGER,
                     recommend VARCHAR(10),
-                    
+
                     -- VIII. Financial awareness
                     read_contract VARCHAR(10),
                     know_limit VARCHAR(10),
@@ -154,50 +157,51 @@ async def init_db():
                     need_stricter_regulation VARCHAR(50)
                 )
             ''')
-            
+
             # Create index for faster queries
             await conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_survey_created_at 
+                CREATE INDEX IF NOT EXISTS idx_survey_created_at
                 ON survey_responses(created_at)
             ''')
             await conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_survey_user_id 
+                CREATE INDEX IF NOT EXISTS idx_survey_user_id
                 ON survey_responses(user_id)
             ''')
-            
+
         log.info("PostgreSQL initialized successfully")
     except ImportError:
         log.error("asyncpg not installed. Run: pip install asyncpg")
     except Exception as e:
         log.error(f"PostgreSQL init error: {e}")
 
+
 async def save_to_db(data: Dict[str, Any]) -> bool:
     """Save survey response to PostgreSQL."""
     global db_pool
-    
+
     if not db_pool:
         return False
-    
+
     try:
         # Convert lists to semicolon-separated strings
         product_types = data.get("product_types", [])
         if isinstance(product_types, (list, set, tuple)):
             product_types = "; ".join(str(x) for x in product_types)
-        
+
         contact_methods = data.get("contact_methods", [])
         if isinstance(contact_methods, (list, set, tuple)):
             contact_methods = "; ".join(str(x) for x in contact_methods)
-        
+
         async with db_pool.acquire() as conn:
             await conn.execute('''
                 INSERT INTO survey_responses (
                     user_id, username, language,
                     region_city, region_city_id, age_group, gender, employment, income,
                     freq_3m, months_using, company_name, avg_purchase, product_types,
-                    multi_company_use, multi_company_debt, income_share_percent, 
+                    multi_company_use, multi_company_debt, income_share_percent,
                     debt_burden_checked, missed_payment,
                     total_cost_clear, fees_explained, schedule_given,
-                    difficulty_reason, borrowed_for_payments, cut_essential_spending, 
+                    difficulty_reason, borrowed_for_payments, cut_essential_spending,
                     used_for_cash_need,
                     contact_methods, aggressive_collection,
                     complaint_submitted, complaint_resolved, satisfaction_1_5, recommend,
@@ -251,42 +255,43 @@ async def save_to_db(data: Dict[str, Any]) -> bool:
         log.error(f"PostgreSQL save error: {e}")
         return False
 
+
 async def get_stats() -> Dict[str, Any]:
     """Get survey statistics from PostgreSQL."""
     global db_pool
-    
+
     if not db_pool:
         return {}
-    
+
     try:
         async with db_pool.acquire() as conn:
             total = await conn.fetchval('SELECT COUNT(*) FROM survey_responses')
             today = await conn.fetchval('''
-                SELECT COUNT(*) FROM survey_responses 
+                SELECT COUNT(*) FROM survey_responses
                 WHERE created_at >= CURRENT_DATE
             ''')
             week = await conn.fetchval('''
-                SELECT COUNT(*) FROM survey_responses 
+                SELECT COUNT(*) FROM survey_responses
                 WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
             ''')
-            
+
             # Top regions
             regions = await conn.fetch('''
-                SELECT region_city, COUNT(*) as cnt 
-                FROM survey_responses 
+                SELECT region_city, COUNT(*) as cnt
+                FROM survey_responses
                 WHERE region_city IS NOT NULL
-                GROUP BY region_city 
-                ORDER BY cnt DESC 
+                GROUP BY region_city
+                ORDER BY cnt DESC
                 LIMIT 5
             ''')
-            
+
             # Satisfaction average
             avg_satisfaction = await conn.fetchval('''
-                SELECT ROUND(AVG(satisfaction_1_5)::numeric, 2) 
-                FROM survey_responses 
+                SELECT ROUND(AVG(satisfaction_1_5)::numeric, 2)
+                FROM survey_responses
                 WHERE satisfaction_1_5 IS NOT NULL
             ''')
-            
+
             return {
                 "total": total or 0,
                 "today": today or 0,
@@ -298,20 +303,21 @@ async def get_stats() -> Dict[str, Any]:
         log.error(f"PostgreSQL stats error: {e}")
         return {}
 
+
 async def export_db_to_csv() -> Optional[str]:
     """Export all PostgreSQL data to a CSV file."""
     global db_pool
-    
+
     if not db_pool:
         return None
-    
+
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch('SELECT * FROM survey_responses ORDER BY created_at')
-            
+
             if not rows:
                 return None
-            
+
             export_path = "/tmp/survey_export.csv"
             with open(export_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
@@ -320,11 +326,12 @@ async def export_db_to_csv() -> Optional[str]:
                 # Write data
                 for row in rows:
                     writer.writerow(row.values())
-            
+
             return export_path
     except Exception as e:
         log.error(f"PostgreSQL export error: {e}")
         return None
+
 
 # ---------------- i18n ----------------
 LANGS = {"uz": "O'zbek", "ru": "Русский", "en": "English"}
@@ -374,7 +381,7 @@ T = {
     },
     "section_2": {
         "uz": "📊 **II. Nasiya savdo xizmatlaridan foydalanish**",
-        "ru": "📊 **II. Использование услуг «Насия савдо»",
+        "ru": "📊 **II. Использование услуг «Насия савдо»**",
         "en": "📊 **II. Usage of Installment Trade Services**",
     },
     "section_3": {
@@ -409,29 +416,33 @@ T = {
     },
 }
 
+
 def tr(lang: str, key: str) -> str:
     lang = lang if lang in LANGS else "uz"
     return T.get(key, {}).get(lang, T.get(key, {}).get("uz", key))
 
+
 # ---------------- Uzbekistan regions (buttons) ----------------
 UZB_REGIONS = [
-    {"id": "qr",  "uz": "Qoraqalpog'iston R.", "ru": "Республика Каракалпакстан", "en": "Republic of Karakalpakstan"},
-    {"id": "an",  "uz": "Andijon",             "ru": "Андижанская",              "en": "Andijan"},
-    {"id": "bu",  "uz": "Buxoro",              "ru": "Бухарская",               "en": "Bukhara"},
-    {"id": "ji",  "uz": "Jizzax",              "ru": "Джизакская",              "en": "Jizzakh"},
-    {"id": "qa",  "uz": "Qashqadaryo",         "ru": "Кашкадарьинская",         "en": "Kashkadarya"},
-    {"id": "na",  "uz": "Navoiy",              "ru": "Навоийская",              "en": "Navoi"},
-    {"id": "nm",  "uz": "Namangan",            "ru": "Наманганская",            "en": "Namangan"},
-    {"id": "sa",  "uz": "Samarqand",           "ru": "Самаркандская",           "en": "Samarkand"},
-    {"id": "su",  "uz": "Surxondaryo",         "ru": "Сурхандарьинская",        "en": "Surkhandarya"},
-    {"id": "si",  "uz": "Sirdaryo",            "ru": "Сырдарьинская",           "en": "Syrdarya"},
-    {"id": "ta",  "uz": "Toshkent vil.",       "ru": "Ташкентская обл.",        "en": "Tashkent Region"},
-    {"id": "tk",  "uz": "Toshkent shahri",     "ru": "г. Ташкент",              "en": "Tashkent City"},
-    {"id": "fa",  "uz": "Farg'ona",            "ru": "Ферганская",              "en": "Fergana"},
-    {"id": "xo",  "uz": "Xorazm",              "ru": "Хорезмская",              "en": "Khorezm"},
+    {"id": "qr", "uz": "Qoraqalpog'iston R.", "ru": "Республика Каракалпакстан", "en": "Republic of Karakalpakstan"},
+    {"id": "an", "uz": "Andijon", "ru": "Андижанская", "en": "Andijan"},
+    {"id": "bu", "uz": "Buxoro", "ru": "Бухарская", "en": "Bukhara"},
+    {"id": "ji", "uz": "Jizzax", "ru": "Джизакская", "en": "Jizzakh"},
+    {"id": "qa", "uz": "Qashqadaryo", "ru": "Кашкадарьинская", "en": "Kashkadarya"},
+    {"id": "na", "uz": "Navoiy", "ru": "Навоийская", "en": "Navoi"},
+    {"id": "nm", "uz": "Namangan", "ru": "Наманганская", "en": "Namangan"},
+    {"id": "sa", "uz": "Samarqand", "ru": "Самаркандская", "en": "Samarkand"},
+    {"id": "su", "uz": "Surxondaryo", "ru": "Сурхандарьинская", "en": "Surkhandarya"},
+    {"id": "si", "uz": "Sirdaryo", "ru": "Сырдарьинская", "en": "Syrdarya"},
+    {"id": "ta", "uz": "Toshkent vil.", "ru": "Ташкентская обл.", "en": "Tashkent Region"},
+    {"id": "tk", "uz": "Toshkent shahri", "ru": "г. Ташкент", "en": "Tashkent City"},
+    {"id": "fa", "uz": "Farg'ona", "ru": "Ферганская", "en": "Fergana"},
+    {"id": "xo", "uz": "Xorazm", "ru": "Хорезмская", "en": "Khorezm"},
 ]
 
+
 # ---------------- Google Sheets helper (optional) ----------------
+
 def try_gs_save_row(
     spreadsheet_name: str,
     worksheet_name: str,
@@ -480,6 +491,7 @@ def try_gs_save_row(
     except Exception as e:
         log.error("Google Sheets error: %s", e)
         return str(e)
+
 
 # ---------------- Survey definition ----------------
 YESNO = {
@@ -929,8 +941,10 @@ CSV_KEYS = [
 LANG, SURVEY_FLOW = range(2)
 
 # ---------------- Helpers ----------------
+
 def get_lang(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     return ctx.user_data.get("lang", "uz")
+
 
 def kb_lang() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -939,19 +953,22 @@ def kb_lang() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("English 🇬🇧", callback_data="lang:en")],
     ])
 
-def kb_choice(lang: str, options: List[str]) -> InlineKeyboardMarkup:
+
+def kb_choice(lang: str, qid: str, options: List[str]) -> InlineKeyboardMarkup:
     rows = []
-    for opt in options:
-        rows.append([InlineKeyboardButton(opt, callback_data=f"ans:{opt}")])
+    for idx, opt in enumerate(options):
+        rows.append([InlineKeyboardButton(opt, callback_data=f"ans:{qid}:{idx}")])
     return InlineKeyboardMarkup(rows)
+
 
 def kb_multi(lang: str, qid: str, options: List[str], selected: set, done_label: str) -> InlineKeyboardMarkup:
     rows = []
-    for opt in options:
-        mark = "✅ " if opt in selected else ""
-        rows.append([InlineKeyboardButton(f"{mark}{opt}", callback_data=f"mul:{qid}:{opt}")])
+    for idx, opt in enumerate(options):
+        mark = "✅ " if idx in selected else ""
+        rows.append([InlineKeyboardButton(f"{mark}{opt}", callback_data=f"mul:{qid}:{idx}")])
     rows.append([InlineKeyboardButton(done_label, callback_data=f"mul_done:{qid}")])
     return InlineKeyboardMarkup(rows)
+
 
 def kb_regions(lang: str, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
     total = len(UZB_REGIONS)
@@ -986,10 +1003,12 @@ def kb_regions(lang: str, page: int = 0, per_page: int = 8) -> InlineKeyboardMar
 
     return InlineKeyboardMarkup(rows)
 
+
 def ensure_csv_headers():
     if not os.path.exists(CSV_PATH):
         with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(CSV_HEADERS_UZ)
+
 
 def append_csv(row: Dict[str, Any]):
     ensure_csv_headers()
@@ -1002,16 +1021,41 @@ def append_csv(row: Dict[str, Any]):
     with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(out)
 
+
 def normalize_number(s: str) -> Optional[int]:
     s = s.strip().replace(" ", "")
     if s == "" or not s.isdigit():
         return None
     return int(s)
 
+
 def is_not_used_answer(ans: str, lang: str) -> bool:
     """Check if the answer indicates user never used nasiya services."""
-    not_used_text = NOT_USED_OPTIONS.get(lang, NOT_USED_OPTIONS["uz"])
-    return ans == not_used_text
+    not_used_values = {
+        value.strip().lower()
+        for value in NOT_USED_OPTIONS.values()
+        if isinstance(value, str)
+    }
+    ans_normalized = ans.strip().lower()
+    return ans_normalized in not_used_values
+
+
+def normalize_multi_selection(selected_raw: List[Any], options: List[str]) -> set:
+    selected_indices: set[int] = set()
+    for item in selected_raw:
+        if isinstance(item, int) and 0 <= item < len(options):
+            selected_indices.add(item)
+            continue
+        if isinstance(item, str):
+            if item.isdigit():
+                idx = int(item)
+                if 0 <= idx < len(options):
+                    selected_indices.add(idx)
+                    continue
+            if item in options:
+                selected_indices.add(options.index(item))
+    return selected_indices
+
 
 async def send_question(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
@@ -1039,12 +1083,13 @@ async def send_question(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if kind == "choice":
         opts = q["options"].get(lang, q["options"].get("uz", []))
-        await update.effective_chat.send_message(full_text, reply_markup=kb_choice(lang, opts))
+        await update.effective_chat.send_message(full_text, reply_markup=kb_choice(lang, qid, opts))
         return
 
     if kind == "multi":
         opts = q["options"].get(lang, q["options"].get("uz", []))
-        selected = set(ctx.user_data.get(f"multi:{qid}", []))
+        selected_raw = ctx.user_data.get(f"multi:{qid}", [])
+        selected = normalize_multi_selection(selected_raw, opts)
         await update.effective_chat.send_message(
             full_text,
             reply_markup=kb_multi(lang, qid, opts, selected, tr(lang, "btn_done")),
@@ -1059,11 +1104,13 @@ async def send_question(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # text / number / percent
     await update.effective_chat.send_message(full_text, reply_markup=ReplyKeyboardRemove())
 
+
 # ---------------- Handlers ----------------
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(tr("uz", "choose_lang"), reply_markup=kb_lang())
     return LANG
+
 
 async def on_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1082,6 +1129,7 @@ async def on_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return SURVEY_FLOW
 
+
 async def on_go_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1097,6 +1145,7 @@ async def on_go_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_question(update, ctx)
     return SURVEY_FLOW
 
+
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1107,7 +1156,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return SURVEY_FLOW
 
     i = int(ctx.user_data.get("q_index", 0))
-    
+
     # Skip section markers
     while i < len(SURVEY) and SURVEY[i]["kind"] == "section":
         i += 1
@@ -1146,22 +1195,39 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # --- single choice ---
     if data.startswith("ans:") and kind == "choice":
-        ans = data.split(":", 1)[1]
+        parts = data.split(":", 2)
+        ans = None
+        if len(parts) == 3:
+            _, qid_from, idx_text = parts
+            if qid_from != qid:
+                return SURVEY_FLOW
+            if idx_text.isdigit():
+                idx = int(idx_text)
+                opts = q["options"].get(lang, q["options"].get("uz", []))
+                if 0 <= idx < len(opts):
+                    ans = opts[idx]
+        elif len(parts) == 2:
+            ans = parts[1]
+
+        if ans is None:
+            await query.message.reply_text(tr(lang, "invalid"))
+            return SURVEY_FLOW
+
         ctx.user_data["answers"][qid] = ans
-        
+
         # Convert satisfaction to integer
         if qid == "satisfaction_1_5":
             try:
                 ctx.user_data["answers"][qid] = int(ans)
             except ValueError:
                 pass
-        
+
         # Check if this is the freq_3m question and user selected "Did not use"
         if qid == "freq_3m" and q.get("skip_if_not_used") and is_not_used_answer(ans, lang):
             # End survey early with special message
             await finalize_not_used(update, ctx)
             return ConversationHandler.END
-        
+
         ctx.user_data["q_index"] = i + 1
         await send_question(update, ctx)
         return SURVEY_FLOW
@@ -1172,16 +1238,29 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if qid2 != qid:
             return SURVEY_FLOW
 
+        opts = q["options"].get(lang, q["options"].get("uz", []))
         key = f"multi:{qid}"
-        selected = set(ctx.user_data.get(key, []))
-        if opt in selected:
-            selected.remove(opt)
+        selected_raw = ctx.user_data.get(key, [])
+        selected = normalize_multi_selection(selected_raw, opts)
+
+        if opt.isdigit():
+            idx = int(opt)
+            if idx in selected:
+                selected.remove(idx)
+            else:
+                if len(selected) < int(q.get("max_select", 7)):
+                    selected.add(idx)
         else:
-            if len(selected) < int(q.get("max_select", 7)):
-                selected.add(opt)
+            if opt in opts:
+                idx = opts.index(opt)
+                if idx in selected:
+                    selected.remove(idx)
+                else:
+                    if len(selected) < int(q.get("max_select", 7)):
+                        selected.add(idx)
+
         ctx.user_data[key] = list(selected)
 
-        opts = q["options"].get(lang, q["options"].get("uz", []))
         await query.message.edit_reply_markup(reply_markup=kb_multi(lang, qid, opts, selected, tr(lang, "btn_done")))
         return SURVEY_FLOW
 
@@ -1190,8 +1269,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         qid2 = data.split(":", 1)[1]
         if qid2 != qid:
             return SURVEY_FLOW
-        selected = ctx.user_data.get(f"multi:{qid}", [])
-        ctx.user_data["answers"][qid] = selected
+        opts = q["options"].get(lang, q["options"].get("uz", []))
+        selected_raw = ctx.user_data.get(f"multi:{qid}", [])
+        selected = normalize_multi_selection(selected_raw, opts)
+        ctx.user_data["answers"][qid] = [opts[idx] for idx in sorted(selected) if 0 <= idx < len(opts)]
         ctx.user_data["q_index"] = i + 1
         await send_question(update, ctx)
         return SURVEY_FLOW
@@ -1199,10 +1280,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(tr(lang, "invalid"))
     return SURVEY_FLOW
 
+
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     i = int(ctx.user_data.get("q_index", 0))
-    
+
     # Skip section markers
     while i < len(SURVEY) and SURVEY[i]["kind"] == "section":
         i += 1
@@ -1254,6 +1336,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(tr(lang, "invalid"))
     return SURVEY_FLOW
 
+
 async def finalize_not_used(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """End survey early when user has never used nasiya services."""
     lang = get_lang(ctx)
@@ -1287,6 +1370,7 @@ async def finalize_not_used(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(tr(lang, "saved_not_used"), reply_markup=ReplyKeyboardRemove())
     ctx.user_data.clear()
 
+
 async def finalize(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     answers = ctx.user_data.get("answers", {})
@@ -1318,6 +1402,7 @@ async def finalize(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(tr(lang, "saved"), reply_markup=ReplyKeyboardRemove())
     ctx.user_data.clear()
 
+
 async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     uid = update.effective_user.id if update.effective_user else 0
@@ -1346,6 +1431,7 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         caption="📊 Nasiya survey export (CSV backup)",
     )
 
+
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = get_lang(ctx)
     uid = update.effective_user.id if update.effective_user else 0
@@ -1358,19 +1444,12 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(tr(lang, "no_data"))
         return
 
-    text = f"""📊 **So'rovnoma statistikasi**
-
-📈 Jami javoblar: {stats.get('total', 0)}
-📅 Bugun: {stats.get('today', 0)}
-📆 Oxirgi 7 kun: {stats.get('week', 0)}
-⭐ O'rtacha qoniqish: {stats.get('avg_satisfaction', 0)}/5
-
-🏆 **Top hududlar:**
-"""
+    text = f"""📊 **So'rovnoma statistikasi**\n\n📈 Jami javoblar: {stats.get('total', 0)}\n📅 Bugun: {stats.get('today', 0)}\n📆 Oxirgi 7 kun: {stats.get('week', 0)}\n⭐ O'rtacha qoniqish: {stats.get('avg_satisfaction', 0)}/5\n\n🏆 **Top hududlar:**\n"""
     for region, count in stats.get("top_regions", []):
         text += f"  • {region}: {count}\n"
 
     await update.message.reply_text(text, parse_mode="Markdown")
+
 
 def build_app():
     if not BOT_TOKEN:
@@ -1397,19 +1476,20 @@ def build_app():
     app.add_handler(CommandHandler("stats", cmd_stats))
     return app
 
+
 async def main():
     # Initialize database
     await init_db()
-    
+
     # Build and run bot
     app = build_app()
     log.info("Bot started.")
-    
+
     # Initialize and start
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    
+
     # Keep running
     try:
         while True:
@@ -1420,6 +1500,7 @@ async def main():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
