@@ -671,27 +671,13 @@ SURVEY_NO_BRANCH: List[Dict[str, Any]] = [
         },
     },
     {
-        "id": "is_useful",
-        "kind": "choice",
-        "text": {
-            "uz": "6.4. Sizning fikringizcha, nasiya savdo xizmati foydali xizmatmi?",
-            "ru": "6.4. По-вашему, «Насия савдо» — это полезная услуга?",
-            "en": "6.4. In your opinion, is installment trade a useful service?",
-        },
-        "options": {
-            "uz": ["Ha, foydali", "Qisman foydali", "Yo'q, foydali emas", "Bilmayman"],
-            "ru": ["Да, полезная", "Частично полезная", "Нет, не полезная", "Не знаю"],
-            "en": ["Yes, useful", "Partially useful", "No, not useful", "Don't know"],
-        },
-    },
-    {
         "id": "decision_factors",
         "kind": "multi",
         "max_select": 7,
         "text": {
-            "uz": "6.5. Nasiya savdodan foydalanish qaroriga asosan nima ta'sir qiladi?\n(bir nechta javob tanlash mumkin)",
-            "ru": "6.5. Что в основном влияет на решение воспользоваться «Насия савдо»?\n(можно несколько)",
-            "en": "6.5. What mainly influences the decision to use installment trade?\n(multiple choice allowed)",
+            "uz": "6.4. Nasiya savdodan foydalanish qaroriga asosan nima ta'sir qiladi?\n(bir nechta javob tanlash mumkin)",
+            "ru": "6.4. Что в основном влияет на решение воспользоваться «Насия савдо»?\n(можно несколько)",
+            "en": "6.4. What mainly influences the decision to use installment trade?\n(multiple choice allowed)",
         },
         "options": {
             "uz": [
@@ -724,41 +710,13 @@ SURVEY_NO_BRANCH: List[Dict[str, Any]] = [
         },
     },
     {
-        "id": "would_use_if_better",
-        "kind": "choice",
-        "text": {
-            "uz": "6.6. Agar shartlar yaxshiroq bo'lsa, nasiya savdodan foydalanishni istarmidingiz?",
-            "ru": "6.6. Если бы условия были лучше, воспользовались бы вы «Насия савдо»?",
-            "en": "6.6. If terms were better, would you use installment trade?",
-        },
-        "options": {
-            "uz": ["Ha", "Yo'q", "Balki"],
-            "ru": ["Да", "Нет", "Может быть"],
-            "en": ["Yes", "No", "Maybe"],
-        },
-    },
-    {
-        "id": "best_for_whom",
-        "kind": "choice",
-        "text": {
-            "uz": "6.7. Sizningcha, nasiya savdo kimlar uchun eng maqbul?",
-            "ru": "6.7. Для кого, по-вашему, «Насия савдо» наиболее подходит?",
-            "en": "6.7. In your opinion, who is installment trade best for?",
-        },
-        "options": {
-            "uz": ["Yoshlar uchun", "Oilali shaxslar uchun", "Kam daromadli aholi uchun", "Rasmiy daromadga ega bo'lmaganlar uchun", "Barcha uchun", "Bilmayman"],
-            "ru": ["Для молодёжи", "Для семейных", "Для малообеспеченных", "Для лиц без официального дохода", "Для всех", "Не знаю"],
-            "en": ["For young people", "For families", "For low-income people", "For those without formal income", "For everyone", "Don't know"],
-        },
-    },
-    {
         "id": "needed_sectors",
         "kind": "multi",
         "max_select": 10,
         "text": {
-            "uz": "6.8. Nasiya savdo xizmatini qaysi sohalarda ko'proq kerak deb hisoblaysiz?\n(bir nechta javob tanlash mumkin)",
-            "ru": "6.8. В каких сферах больше нужна услуга «Насия савдо»?\n(можно несколько)",
-            "en": "6.8. In which sectors do you think installment trade is most needed?\n(multiple choice allowed)",
+            "uz": "6.5. Nasiya savdo xizmatini qaysi sohalarda ko'proq kerak deb hisoblaysiz?\n(bir nechta javob tanlash mumkin)",
+            "ru": "6.5. В каких сферах больше нужна услуга «Насия савдо»?\n(можно несколько)",
+            "en": "6.5. In which sectors do you think installment trade is most needed?\n(multiple choice allowed)",
         },
         "options": {
             "uz": [
@@ -803,9 +761,9 @@ SURVEY_NO_BRANCH: List[Dict[str, Any]] = [
         "id": "nu_impulse_buying",
         "kind": "choice",
         "text": {
-            "uz": "6.9. Nasiya savdo xizmatlari odatda rejalashtirilmagan xaridlarni ko'paytiradi, deb hisoblaysizmi?",
-            "ru": "6.9. Считаете ли вы, что услуги «Насия савдо» обычно увеличивают незапланированные покупки?",
-            "en": "6.9. Do you think installment trade services typically increase unplanned purchases?",
+            "uz": "6.6. Nasiya savdo xizmatlari odatda rejalashtirilmagan xaridlarni ko'paytiradi, deb hisoblaysizmi?",
+            "ru": "6.6. Считаете ли вы, что услуги «Насия савдо» обычно увеличивают незапланированные покупки?",
+            "en": "6.6. Do you think installment trade services typically increase unplanned purchases?",
         },
         "options": YESNO,
     },
@@ -813,9 +771,9 @@ SURVEY_NO_BRANCH: List[Dict[str, Any]] = [
         "id": "nu_need_regulation",
         "kind": "choice",
         "text": {
-            "uz": "6.10. Sizningcha, nasiya savdo bozori davlat tomonidan tartibga solinishi zarurmi?",
-            "ru": "6.10. Нужно ли, по-вашему, государственное регулирование рынка «Насия савдо»?",
-            "en": "6.10. In your opinion, should the installment trade market be regulated by the government?",
+            "uz": "6.7. Sizningcha, nasiya savdo bozori davlat tomonidan tartibga solinishi zarurmi?",
+            "ru": "6.7. Нужно ли, по-вашему, государственное регулирование рынка «Насия савдо»?",
+            "en": "6.7. In your opinion, should the installment trade market be regulated by the government?",
         },
         "options": {
             "uz": ["Zarur", "Zarur emas", "Javob berishga qiynalaman"],
@@ -1141,26 +1099,6 @@ SURVEY_YES_BRANCH: List[Dict[str, Any]] = [
         "conditional_on": "complaint_submitted",
         "conditional_value_yes": True,
     },
-    {
-        "id": "satisfaction_1_5",
-        "kind": "choice",
-        "text": {
-            "uz": "2️⃣6️⃣ Nasiya savdo xizmatlaridan umumiy qoniqish darajangizni 1 dan 5 gacha baholang:\n(1 — umuman qoniqmayman, 5 — to'liq qoniqaman)",
-            "ru": "2️⃣6️⃣ Оцените общую удовлетворённость услугами от 1 до 5:\n(1 — совсем не удовлетворён, 5 — полностью удовлетворён)",
-            "en": "2️⃣6️⃣ Rate your overall satisfaction from 1 to 5:\n(1 — not satisfied at all, 5 — fully satisfied)",
-        },
-        "options": {"uz": ["1", "2", "3", "4", "5"], "ru": ["1", "2", "3", "4", "5"], "en": ["1", "2", "3", "4", "5"]},
-    },
-    {
-        "id": "recommend",
-        "kind": "choice",
-        "text": {
-            "uz": "2️⃣7️⃣ Nasiya savdo xizmatlarini boshqalarga tavsiya qilasizmi?",
-            "ru": "2️⃣7️⃣ Порекомендовали бы услуги «Насия савдо» другим?",
-            "en": "2️⃣7️⃣ Would you recommend installment trade services to others?",
-        },
-        "options": YESNO,
-    },
 
     # ======== VIII. Financial awareness ========
     {
@@ -1169,32 +1107,12 @@ SURVEY_YES_BRANCH: List[Dict[str, Any]] = [
         "text": {"uz": "section_8", "ru": "section_8", "en": "section_8"},
     },
     {
-        "id": "read_contract",
-        "kind": "choice",
-        "text": {
-            "uz": "2️⃣8️⃣ Shartnoma shartlari bilan tanishib chiqqanmisiz?",
-            "ru": "2️⃣8️⃣ Ознакомились ли вы с условиями договора?",
-            "en": "2️⃣8️⃣ Did you read the contract terms?",
-        },
-        "options": YESNO,
-    },
-    {
-        "id": "know_limit",
-        "kind": "choice",
-        "text": {
-            "uz": "2️⃣9️⃣ Sizga ajratilgan kredit limitini bilasizmi?",
-            "ru": "2️⃣9️⃣ Знаете ли вы свой кредитный лимит?",
-            "en": "2️⃣9️⃣ Do you know your assigned credit limit?",
-        },
-        "options": YESNO,
-    },
-    {
         "id": "impulse_buying",
         "kind": "choice",
         "text": {
-            "uz": "3️⃣0️⃣ Nasiya savdo xizmatlari odatda rejalashtirilmagan xaridlarni ko'paytiradi deb hisoblaysizmi?",
-            "ru": "3️⃣0️⃣ Считаете ли, что услуги «Насия савдо» обычно увеличивают незапланированные покупки?",
-            "en": "3️⃣0️⃣ Do you think installment services increase unplanned purchases?",
+            "uz": "2️⃣6️⃣ Nasiya savdo xizmatlari odatda rejalashtirilmagan xaridlarni ko'paytiradi deb hisoblaysizmi?",
+            "ru": "2️⃣6️⃣ Считаете ли, что услуги «Насия савдо» обычно увеличивают незапланированные покупки?",
+            "en": "2️⃣6️⃣ Do you think installment services increase unplanned purchases?",
         },
         "options": YESNO,
     },
@@ -1202,9 +1120,9 @@ SURVEY_YES_BRANCH: List[Dict[str, Any]] = [
         "id": "need_stricter_regulation",
         "kind": "choice",
         "text": {
-            "uz": "3️⃣1️⃣ Sizningcha, nasiya savdo bozori davlat tomonidan tartibga solinishi zarurmi?",
-            "ru": "3️⃣1️⃣ Нужно ли, по-вашему, государственное регулирование рынка «Насия савдо»?",
-            "en": "3️⃣1️⃣ Should the installment trade market be regulated by the government?",
+            "uz": "2️⃣7️⃣ Sizningcha, nasiya savdo bozori davlat tomonidan tartibga solinishi zarurmi?",
+            "ru": "2️⃣7️⃣ Нужно ли, по-вашему, государственное регулирование рынка «Насия савдо»?",
+            "en": "2️⃣7️⃣ Should the installment trade market be regulated by the government?",
         },
         "options": {
             "uz": ["Zarur", "Zarur emas", "Javob berishga qiynalaman"],
